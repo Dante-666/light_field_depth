@@ -61,16 +61,19 @@ LEDepthEstimator::LEDepthEstimator(LfContainer *light_field, float min_disp, flo
 
     //This generates a vector of coordinates that can be used for inner product
     this->initializeCoordinates();
-    //This generates random planes and associates them with each pixel
-    this->initializeRandomPlane(HORIZ);
-    this->initializeRandomPlane(VERT);
 
     //One time effort for both EPIs
     this->initializeSmoothnessCoeff();
 
+    this->prefetchEPIData();
+
+    //This generates random planes and associates them with each pixel
+    this->initializeRandomPlane(HORIZ);
+    this->initializeRandomPlane(VERT);
     //Init current fast
     this->initializeCurrentCosts(HORIZ);
     this->initializeCurrentCosts(VERT);
+//    this->initializeCurrentCostsFast(HORIZ);
 
     //Set the ground truths for central image from the light field data
     this->light_field->getGTDepth(this->light_field->s()/2, this->light_field->t()/2, this->gt_depth);
@@ -102,8 +105,8 @@ void LEDepthEstimator::initializeCoordinates()
 
 void LEDepthEstimator::initializeRandomPlane(epi_type type)
 {
-    for(int j = 0; j < height; j++) {
-        for(int i = 0; i < width; i++) {
+    for(int j = M; j < height - 2*M; j++) {
+        for(int i = M; i < width - 2*M; i++) {
             this->current_plane_label[type].at<Plane>(j, i) = this->createRandomLabel(cv::Point(i, j));
         }
     }
@@ -121,17 +124,37 @@ void LEDepthEstimator::initializeSmoothnessCoeff()
     for(int i = 0; i < neighbours.size(); i++) {
         cv::Mat image_q = central_image(inner_rect + neighbours[i]).clone();
         cv::absdiff(image_q, image_p, image_q);
-//        cv::copyMakeBorder(image_q, image_q, 1, 1, 1, 1, cv::BORDER_CONSTANT, cv::Scalar(0));
+
         cv::exp(-cvutils::channelSum(image_q)/10.0f, smoothness_coeff[i]);
         cv::copyMakeBorder(smoothness_coeff[i], smoothness_coeff[i], M, M, M, M, cv::BORDER_CONSTANT, cv::Scalar(0));
 
     }
 }
 
-void LEDepthEstimator::initializeCurrentCosts(epi_type type)
+void LEDepthEstimator::initializeCurrentCostsFast(epi_type type)
 {
     if(type == HORIZ) {
-        uint16_t s_hat = light_field->s()/2;
+        Region& region = regions[0];
+        cv::Point offset(M, M);
+
+        for (int j = 0; j < region.unitRegions.size(); j++){
+            cv::Rect unit = region.unitRegions[j];
+
+            int n = cv::theRNG().uniform(0, unit.height * unit.width);
+            int xx = n % unit.width;
+            int yy = n / unit.width;
+
+            cv::Point pt(unit.x + xx, unit.y + yy);
+            pt += offset;
+
+            Plane label = createRandomLabel(pt);
+            this->current_plane_label[HORIZ](unit + offset) = label.toScalar();
+
+        }
+
+        uint16_t s_hat = this->light_field->s()/2;
+        computeDisparityFromPlane(HORIZ);
+
         #pragma omp parallel for
         for(uint16_t v = M; v < this->height - 2*M; v++) {
             for(uint16_t u = M; u < this->width - 2*M; u++) {
@@ -142,17 +165,89 @@ void LEDepthEstimator::initializeCurrentCosts(epi_type type)
                 cv::Point2f centre(u, s_hat);
 
                 double curr_cost = this->getCostFromExtendedSet(centre, HORIZ, d_u,
-                                                            this->h_epi_arr[v],
-                                                            this->h_epi_grad_arr[v]);
+                                                                this->h_epi_arr[v],
+                                                                this->h_epi_grad_arr[v]);
+                if(this->isValidLabel(this->current_plane_label[HORIZ].at<Plane>(v, u), cv::Point(u, v)))
+                    this->current_cost[HORIZ].at<float>(v, u) = curr_cost;
+                else
+                    this->current_cost[HORIZ].at<float>(v, u) = INVALID_COST;
+            }
+        }
 
-                this->current_cost[HORIZ].at<float>(v, u) = curr_cost;
+    } else if(type == VERT) {
+        Region& region = regions[0];
+        cv::Point offset(M, M);
+
+        for (int j = 0; j < region.unitRegions.size(); j++){
+            cv::Rect unit = region.unitRegions[j];
+
+            int n = cv::theRNG().uniform(0, unit.height * unit.width);
+            int xx = n % unit.width;
+            int yy = n / unit.width;
+
+            cv::Point pt(unit.x + xx, unit.y + yy);
+            pt += offset;
+
+            Plane label = createRandomLabel(pt);
+            this->current_plane_label[VERT](unit + offset) = label.toScalar();
+
+        }
+
+        uint16_t s_hat = this->light_field->s()/2;
+        computeDisparityFromPlane(VERT);
+
+        #pragma omp parallel for
+        for(uint16_t u = M; u < this->width - 2*M; u++) {
+            for(uint16_t v = M; v < this->height - 2*M; v++) {
+                /*
+                 * For each pixel p = (u, v) compute the set of allowed Radiances;
+                 */
+                float d_v = this->current_disp[VERT].at<float>(v, u);
+                cv::Point2f centre(u, s_hat);
+
+                double curr_cost = this->getCostFromExtendedSet(centre, HORIZ, d_v,
+                                                                this->v_epi_arr[u],
+                                                                this->v_epi_grad_arr[u]);
+                if(this->isValidLabel(this->current_plane_label[VERT].at<Plane>(v, u), cv::Point(u, v)))
+                    this->current_cost[VERT].at<float>(v, u) = curr_cost;
+                else
+                    this->current_cost[VERT].at<float>(v, u) = INVALID_COST;
+            }
+        }
+    }
+}
+
+void LEDepthEstimator::initializeCurrentCosts(epi_type type)
+{
+    if(type == HORIZ) {
+        uint16_t s_hat = light_field->s()/2;
+        this->computeDisparityFromPlane(HORIZ);
+
+//        #pragma omp parallel for
+        for(uint16_t v = M; v < this->height - 2*M; v++) {
+            for(uint16_t u = M; u < this->width - 2*M; u++) {
+                /*
+                 * For each pixel p = (u, v) compute the set of allowed Radiances;
+                 */
+                float d_u = this->current_disp[HORIZ].at<float>(v, u);
+                cv::Point2f centre(u, s_hat);
+
+                double curr_cost = this->getCostFromExtendedSet(centre, HORIZ, d_u,
+                                                                this->h_epi_arr[v],
+                                                                this->h_epi_grad_arr[v]);
+                if(this->isValidLabel(this->current_plane_label[HORIZ].at<Plane>(v, u), cv::Point(u, v)))
+                    this->current_cost[HORIZ].at<float>(v, u) = curr_cost;
+                else
+                    this->current_cost[HORIZ].at<float>(v, u) = INVALID_COST;
             }
         }
     } else if(type == VERT) {
         uint16_t t_hat = light_field->t()/2;
-        #pragma omp parallel for
-        for(uint16_t u = 0; u < this->width; u++) {
-            for(uint16_t v = 0; v < this->height; v++) {
+        this->computeDisparityFromPlane(VERT);
+
+//        #pragma omp parallel for
+        for(uint16_t u = M; u < this->width - 2*M; u++) {
+            for(uint16_t v = M; v < this->height - 2*M; v++) {
                 /**
                   * For each pixel p = (u, v) compute the set of allowed Radiances;
                   */
@@ -163,7 +258,10 @@ void LEDepthEstimator::initializeCurrentCosts(epi_type type)
                                                                 this->v_epi_arr[u],
                                                                 this->v_epi_grad_arr[u]);
 
-                this->current_cost[VERT].at<float>(v, u) = curr_cost;
+                if(this->isValidLabel(this->current_plane_label[VERT].at<Plane>(v, u), cv::Point(u, v)))
+                    this->current_cost[VERT].at<float>(v, u) = curr_cost;
+                else
+                    this->current_cost[VERT].at<float>(v, u) = INVALID_COST;
             }
         }
     }
@@ -171,7 +269,7 @@ void LEDepthEstimator::initializeCurrentCosts(epi_type type)
 
 void LEDepthEstimator::computeDisparityFromPlane(epi_type type)
 {
-
+    this->current_disp[type] = cvutils::channelDot(this->coordinates, this->current_plane_label[type]);
 }
 
 float LEDepthEstimator::getDisparityPerturbationWidth(int iter)
@@ -189,30 +287,58 @@ void LEDepthEstimator::run()
 
     std::chrono::time_point t_0 = std::chrono::high_resolution_clock::now();
     std::cout<<"Prefetching EPI Data..."<<std::endl;
-    this->prefetchEPIData(false);
+//    this->prefetchEPIData(false);
     std::chrono::time_point t_1 = std::chrono::high_resolution_clock::now();
     std::cout<<"Prefetching EPI Data took : "<<std::chrono::duration_cast<std::chrono::seconds>(t_1 - t_0).count()<<" seconds"<<std::endl;
 
-    int pmInit = 2;
+    int pmInit = 1;
 
     for(int iteration = 0; iteration < pmInit; iteration++) {
         std::cout<<"Algorithm ongoing, iteration : "<<iteration<<std::endl;
+        std::chrono::time_point t_i = std::chrono::high_resolution_clock::now();
         for(int grid = 0; grid < regions.size(); grid++) {
             runHorizontalRegionPropagation(iteration, grid);
+            runVerticalRegionPropagation(iteration, grid);
         }
+        std::chrono::time_point t_j = std::chrono::high_resolution_clock::now();
+        std::cout<<"Time taken : "<<std::chrono::duration_cast<std::chrono::seconds>(t_j  - t_i).count()<<" seconds"<<std::endl;
         evaluate(iteration);
     }
 
-    int maxIter = 5;
+    int maxIter = 1;
     for(int iteration = 0; iteration < maxIter; iteration++) {
         std::cout<<"Algorithm ongoing, iteration : "<<iteration+pmInit<<std::endl;
+        std::chrono::time_point t_i = std::chrono::high_resolution_clock::now();
         for(int grid = 0; grid < regions.size(); grid++) {
             runHorizontalRegionPropagation(iteration, grid);
+            runVerticalRegionPropagation(iteration, grid);
         }
+        std::chrono::time_point t_j = std::chrono::high_resolution_clock::now();
+        std::cout<<"Time taken : "<<std::chrono::duration_cast<std::chrono::seconds>(t_j  - t_i).count()<<" seconds"<<std::endl;
         evaluate(iteration + pmInit);
     }
+    std::chrono::time_point t_n = std::chrono::high_resolution_clock::now();
+    std::cout<<"Total running time : "<<std::chrono::duration_cast<std::chrono::seconds>(t_n - t_0).count()<<" seconds"<<std::endl;
 
+    std::cout<<"Post processing :"<<std::endl;
+    postProcess();
 
+}
+
+bool LEDepthEstimator::isValidLabel(Plane label, cv::Point pos)
+{
+    float ds = label.GetZ(pos);
+    float a5 = label.a * 5;
+    float b5 = label.b * 5;
+    float d;
+
+    return (
+        ds >= this->min_disp && ds <= this->max_disp
+        && ((d = ds + a5 + b5) >= this->min_disp) && d <= this->max_disp
+        && ((d = ds + a5 - b5) >= this->min_disp) && d <= this->max_disp
+        && ((d = ds - a5 + b5) >= this->min_disp) && d <= this->max_disp
+        && ((d = ds - a5 - b5) >= this->min_disp) && d <= this->max_disp
+    );
 }
 
 cv::Mat LEDepthEstimator::isValidLabel(Plane label, cv::Rect rect)
@@ -222,7 +348,7 @@ cv::Mat LEDepthEstimator::isValidLabel(Plane label, cv::Rect rect)
     const cv::Scalar lower(this->min_disp);
     const cv::Scalar upper(this->max_disp);
     cv::Mat mask = cv::Mat_<uchar>(rect.size(), (uchar)255);
-    cv::Mat disp = cvutils::channelSum(coordinates(rect).mul(label.toScalar()));
+    cv::Mat disp = cvutils::channelSum(this->coordinates(rect).mul(label.toScalar()));
     for (int y = 0; y < mask.rows; y++)
     {
         for (int x = 0; x < mask.cols; x++)
@@ -323,21 +449,6 @@ void LEDepthEstimator::prefetchEPIData(bool archive)
     }
 }
 
-void LEDepthEstimator::runHorizontalSpatialPropagation(int iter)
-{
-
-}
-
-void LEDepthEstimator::runVerticalSpatialPropagation(int iter)
-{
-
-}
-
-void LEDepthEstimator::perturbatePlaneLabels(int iter)
-{
-
-}
-
 void LEDepthEstimator::runHorizontalRegionPropagation(int iter, int grid, bool do_gc)
 {
 
@@ -351,9 +462,15 @@ void LEDepthEstimator::runHorizontalRegionPropagation(int iter, int grid, bool d
 
 }
 
-void LEDepthEstimator::runVerticalRegionPropagation(int iter)
+void LEDepthEstimator::runVerticalRegionPropagation(int iter, int grid, bool do_gc)
 {
+    Region& region = regions[grid];
+    // 16-time loop
+    for(int j = 0; j < region.disjointRegionSets.size(); j++) {
 
+        runVerticalIterativeExpansion(iter, grid, j, do_gc);
+
+    }
 }
 
 void LEDepthEstimator::runHorizontalIterativeExpansion(int iter, int grid, int set, bool do_gc)
@@ -367,34 +484,128 @@ void LEDepthEstimator::runHorizontalIterativeExpansion(int iter, int grid, int s
         int K_random = 7;
 
         int innerIter = 0;
-        while(innerIter < K_exp) {
+        while(innerIter++ < K_exp) {
             runHorizontalExpansionProposer(region, set, do_gc);
         }
 
         innerIter = 0;
-        while(innerIter < K_ransac) {
+        while(innerIter++ < K_ransac) {
             runHorizontalRansacProposer(region, set, do_gc);
         }
 
         innerIter = iter;
         while(innerIter < K_random && getDisparityPerturbationWidth(innerIter) < 0.1) {
-            runHorizontalRandomProposer(region, set, innerIter, do_gc);
+            runHorizontalRandomProposer(region, set, innerIter++, do_gc);
         }
 
 
     } else if (grid == 1) {
 
+        Region& region = regions[grid];
+
+        int K_exp = 2;
+        int K_ransac = 1;
+
+        int innerIter = 0;
+        while(innerIter++ < K_exp) {
+            runHorizontalExpansionProposer(region, set, do_gc);
+        }
+
+        innerIter = 0;
+        while(innerIter++ < K_ransac) {
+            runHorizontalRansacProposer(region, set, do_gc);
+        }
+
+
     } else if (grid == 2) {
+
+        Region& region = regions[grid];
+
+        int K_exp = 2;
+        int K_ransac = 1;
+
+        int innerIter = 0;
+        while(innerIter++ < K_exp) {
+            runHorizontalExpansionProposer(region, set, do_gc);
+        }
+
+        innerIter = 0;
+        while(innerIter++ < K_ransac) {
+            runHorizontalRansacProposer(region, set, do_gc);
+        }
 
     }
 
 
 }
 
+void LEDepthEstimator::runVerticalIterativeExpansion(int iter, int grid, int set, bool do_gc)
+{
+    if(grid == 0) {
+
+        Region& region = regions[grid];
+
+        int K_exp = 1;
+        int K_ransac = 1;
+        int K_random = 7;
+
+        int innerIter = 0;
+        while(innerIter++ < K_exp) {
+            runVerticalExpansionProposer(region, set, do_gc);
+        }
+
+        innerIter = 0;
+        while(innerIter++ < K_ransac) {
+            runVerticalRansacProposer(region, set, do_gc);
+        }
+
+        innerIter = iter;
+        while(innerIter < K_random && getDisparityPerturbationWidth(innerIter) < 0.1) {
+            runVerticalRandomProposer(region, set, innerIter++, do_gc);
+        }
+
+
+    } else if (grid == 1) {
+
+        Region& region = regions[grid];
+
+        int K_exp = 2;
+        int K_ransac = 1;
+
+        int innerIter = 0;
+        while(innerIter++ < K_exp) {
+            runVerticalExpansionProposer(region, set, do_gc);
+        }
+
+        innerIter = 0;
+        while(innerIter++ < K_ransac) {
+            runVerticalRansacProposer(region, set, do_gc);
+        }
+
+    } else if (grid == 2) {
+
+        Region& region = regions[grid];
+
+        int K_exp = 2;
+        int K_ransac = 1;
+
+        int innerIter = 0;
+        while(innerIter++ < K_exp) {
+            runVerticalExpansionProposer(region, set, do_gc);
+        }
+
+        innerIter = 0;
+        while(innerIter++ < K_ransac) {
+            runVerticalRansacProposer(region, set, do_gc);
+        }
+
+    }
+}
+
 void LEDepthEstimator::runHorizontalExpansionProposer(const Region& region, int set, bool do_gc)
 {
     cv::Point offset(M, M);
-    cv::Mat validMask = cv::Mat::zeros(this->height, this->width, CV_8U);
+//    cv::Mat validMask = cv::Mat::zeros(this->height, this->width, CV_8U);
     cv::Mat pixelMask = cv::Mat::zeros(this->height, this->width, CV_8U);
     cv::Mat proposedLabels = cv::Mat::zeros(this->height, this->width, cv::DataType<Plane>::type);
 
@@ -409,17 +620,17 @@ void LEDepthEstimator::runHorizontalExpansionProposer(const Region& region, int 
         Plane alpha = getExpansionPlane(unitRegion + offset, HORIZ);
 
         proposedLabels(sharedRegion + offset).setTo(alpha.toScalar());
-        cv::Mat validRegion = this->isValidLabel(alpha, sharedRegion + offset);
+//        cv::Mat validRegion = this->isValidLabel(alpha, sharedRegion + offset);
 
-        validMask(sharedRegion + offset) = validRegion;
+//        validMask(sharedRegion + offset) = validRegion;
         pixelMask(sharedRegion + offset).setTo(255);
     }
 
     cv::Mat proposalCosts = cv::Mat::zeros(this->height, this->width, CV_32F);
 
-    runHorizontalCostComputation(proposalCosts, proposedLabels, pixelMask, validMask);
+    runHorizontalCostComputation(proposalCosts, proposedLabels, pixelMask);
 
-    //Parallelize this
+    #pragma omp parallel for
     for(int n = 0; n < region.disjointRegionSets[set].size(); n++) {
         int r = region.disjointRegionSets[set][n];
 
@@ -442,9 +653,11 @@ void LEDepthEstimator::runHorizontalRansacProposer(const Region &region, int set
 {
     cv::Point offset(M, M);
 
-    cv::Mat validMask = cv::Mat::zeros(this->height, this->width, CV_8U);
+//    cv::Mat validMask = cv::Mat::zeros(this->height, this->width, CV_8U);
     cv::Mat pixelMask = cv::Mat::zeros(this->height, this->width, CV_8U);
     cv::Mat proposedLabels = cv::Mat::zeros(this->height, this->width, cv::DataType<Plane>::type);
+
+    this->computeDisparityFromPlane(HORIZ);
 
     for(int n = 0; n <region.disjointRegionSets[set].size(); n++) {
 
@@ -456,17 +669,17 @@ void LEDepthEstimator::runHorizontalRansacProposer(const Region &region, int set
         Plane alpha = getRANSACPlane(unitRegion + offset, HORIZ);
 
         proposedLabels(sharedRegion + offset).setTo(alpha.toScalar());
-        cv::Mat validRegion = this->isValidLabel(alpha, sharedRegion + offset);
+//        cv::Mat validRegion = this->isValidLabel(alpha, sharedRegion + offset);
 
-        validMask(sharedRegion + offset) = validRegion;
+//        validMask(sharedRegion + offset) = validRegion;
         pixelMask(sharedRegion + offset).setTo(255);
     }
 
     cv::Mat proposalCosts = cv::Mat::zeros(this->height, this->width, CV_32F);
 
-    runHorizontalCostComputation(proposalCosts, proposedLabels, pixelMask, validMask);
+    runHorizontalCostComputation(proposalCosts, proposedLabels, pixelMask);
 
-    //Parallelize this
+    #pragma omp parallel for
     for(int n = 0; n < region.disjointRegionSets[set].size(); n++) {
         int r = region.disjointRegionSets[set][n];
 
@@ -489,7 +702,7 @@ void LEDepthEstimator::runHorizontalRandomProposer(const Region &region, int ite
 {
     cv::Point offset(M, M);
 
-    cv::Mat validMask = cv::Mat::zeros(this->height, this->width, CV_8U);
+//    cv::Mat validMask = cv::Mat::zeros(this->height, this->width, CV_8U);
     cv::Mat pixelMask = cv::Mat::zeros(this->height, this->width, CV_8U);
     cv::Mat proposedLabels = cv::Mat::zeros(this->height, this->width, cv::DataType<Plane>::type);
 
@@ -505,15 +718,16 @@ void LEDepthEstimator::runHorizontalRandomProposer(const Region &region, int ite
         proposedLabels(sharedRegion + offset).setTo(alpha.toScalar());
         cv::Mat validRegion = this->isValidLabel(alpha, sharedRegion + offset);
 
-        validMask(sharedRegion + offset) = validRegion;
+//        validMask(sharedRegion + offset) = validRegion;
         pixelMask(sharedRegion + offset).setTo(255);
     }
 
     cv::Mat proposalCosts = cv::Mat::zeros(this->height, this->width, CV_32F);
 
-    runHorizontalCostComputation(proposalCosts, proposedLabels, pixelMask, validMask);
+    runHorizontalCostComputation(proposalCosts, proposedLabels, pixelMask);
 
     //Parallelize this
+    #pragma omp parallel for
     for(int n = 0; n < region.disjointRegionSets[set].size(); n++) {
         int r = region.disjointRegionSets[set][n];
 
@@ -532,21 +746,162 @@ void LEDepthEstimator::runHorizontalRandomProposer(const Region &region, int ite
     }
 }
 
-void LEDepthEstimator::runHorizontalCostComputation(cv::Mat &proposalCosts, cv::Mat& proposedLabels, cv::Mat& pixelMask, cv::Mat &validMask)
+void LEDepthEstimator::runVerticalExpansionProposer(const Region &region, int set, bool do_gc)
+{
+    cv::Point offset(M, M);
+//    cv::Mat validMask = cv::Mat::zeros(this->height, this->width, CV_8U);
+    cv::Mat pixelMask = cv::Mat::zeros(this->height, this->width, CV_8U);
+    cv::Mat proposedLabels = cv::Mat::zeros(this->height, this->width, cv::DataType<Plane>::type);
+
+    // Can be parallized here
+    for(int n = 0; n <region.disjointRegionSets[set].size(); n++) {
+
+        int r = region.disjointRegionSets[set][n];
+
+        const cv::Rect& unitRegion = region.unitRegions[r];
+        const cv::Rect& sharedRegion = region.sharedRegions[r];
+
+        Plane alpha = getExpansionPlane(unitRegion + offset, VERT);
+
+        proposedLabels(sharedRegion + offset).setTo(alpha.toScalar());
+//        cv::Mat validRegion = this->isValidLabel(alpha, sharedRegion + offset);
+
+//        validMask(sharedRegion + offset) = validRegion;
+        pixelMask(sharedRegion + offset).setTo(255);
+    }
+
+    cv::Mat proposalCosts = cv::Mat::zeros(this->height, this->width, CV_32F);
+
+    runVerticalCostComputation(proposalCosts, proposedLabels, pixelMask);
+
+    //Parallelize this
+    #pragma omp parallel for
+    for(int n = 0; n < region.disjointRegionSets[set].size(); n++) {
+        int r = region.disjointRegionSets[set][n];
+
+        const cv::Rect& sharedRegion = region.sharedRegions[r];
+        Plane alpha = proposedLabels(sharedRegion + offset).at<Plane>(0, 0);
+        const cv::Mat& localProposals = proposalCosts(sharedRegion + offset);
+        cv::Mat updateMask = cv::Mat::zeros(sharedRegion.size(), CV_8U);
+
+        if(do_gc)
+            runGCExpansion(sharedRegion + offset, localProposals, alpha, updateMask);
+        else
+            updateMask = this->current_cost[VERT](sharedRegion+offset) > proposalCosts(sharedRegion + offset);
+
+        proposalCosts(sharedRegion + offset).copyTo(this->current_cost[VERT](sharedRegion + offset), updateMask);
+        this->current_plane_label[VERT](sharedRegion + offset).setTo(alpha.toScalar(), updateMask);
+    }
+}
+
+void LEDepthEstimator::runVerticalRansacProposer(const Region &region, int set, bool do_gc)
+{
+    cv::Point offset(M, M);
+//    cv::Mat validMask = cv::Mat::zeros(this->height, this->width, CV_8U);
+    cv::Mat pixelMask = cv::Mat::zeros(this->height, this->width, CV_8U);
+    cv::Mat proposedLabels = cv::Mat::zeros(this->height, this->width, cv::DataType<Plane>::type);
+
+    this->computeDisparityFromPlane(VERT);
+
+    // Can be parallized here
+    for(int n = 0; n <region.disjointRegionSets[set].size(); n++) {
+
+        int r = region.disjointRegionSets[set][n];
+
+        const cv::Rect& unitRegion = region.unitRegions[r];
+        const cv::Rect& sharedRegion = region.sharedRegions[r];
+
+        Plane alpha = getRANSACPlane(unitRegion + offset, VERT);
+
+        proposedLabels(sharedRegion + offset).setTo(alpha.toScalar());
+//        cv::Mat validRegion = this->isValidLabel(alpha, sharedRegion + offset);
+
+//        validMask(sharedRegion + offset) = validRegion;
+        pixelMask(sharedRegion + offset).setTo(255);
+    }
+
+    cv::Mat proposalCosts = cv::Mat::zeros(this->height, this->width, CV_32F);
+
+    runVerticalCostComputation(proposalCosts, proposedLabels, pixelMask);
+
+    //Parallelize this
+    #pragma omp parallel for
+    for(int n = 0; n < region.disjointRegionSets[set].size(); n++) {
+        int r = region.disjointRegionSets[set][n];
+
+        const cv::Rect& sharedRegion = region.sharedRegions[r];
+        Plane alpha = proposedLabels(sharedRegion + offset).at<Plane>(0, 0);
+        const cv::Mat& localProposals = proposalCosts(sharedRegion + offset);
+        cv::Mat updateMask = cv::Mat::zeros(sharedRegion.size(), CV_8U);
+
+        if(do_gc)
+            runGCExpansion(sharedRegion + offset, localProposals, alpha, updateMask);
+        else
+            updateMask = this->current_cost[VERT](sharedRegion+offset) > proposalCosts(sharedRegion + offset);
+
+        proposalCosts(sharedRegion + offset).copyTo(this->current_cost[VERT](sharedRegion + offset), updateMask);
+        this->current_plane_label[VERT](sharedRegion + offset).setTo(alpha.toScalar(), updateMask);
+    }
+}
+
+void LEDepthEstimator::runVerticalRandomProposer(const Region &region, int iter, int set, bool do_gc)
+{
+    cv::Point offset(M, M);
+//    cv::Mat validMask = cv::Mat::zeros(this->height, this->width, CV_8U);
+    cv::Mat pixelMask = cv::Mat::zeros(this->height, this->width, CV_8U);
+    cv::Mat proposedLabels = cv::Mat::zeros(this->height, this->width, cv::DataType<Plane>::type);
+
+    // Can be parallized here
+    for(int n = 0; n <region.disjointRegionSets[set].size(); n++) {
+
+        int r = region.disjointRegionSets[set][n];
+
+        const cv::Rect& unitRegion = region.unitRegions[r];
+        const cv::Rect& sharedRegion = region.sharedRegions[r];
+
+        Plane alpha = getRandomPlane(unitRegion + offset, VERT, iter);
+
+        proposedLabels(sharedRegion + offset).setTo(alpha.toScalar());
+//        cv::Mat validRegion = this->isValidLabel(alpha, sharedRegion + offset);
+
+//        validMask(sharedRegion + offset) = validRegion;
+        pixelMask(sharedRegion + offset).setTo(255);
+    }
+
+    cv::Mat proposalCosts = cv::Mat::zeros(this->height, this->width, CV_32F);
+
+    runVerticalCostComputation(proposalCosts, proposedLabels, pixelMask);
+
+    //Parallelize this
+    #pragma omp parallel for
+    for(int n = 0; n < region.disjointRegionSets[set].size(); n++) {
+        int r = region.disjointRegionSets[set][n];
+
+        const cv::Rect& sharedRegion = region.sharedRegions[r];
+        Plane alpha = proposedLabels(sharedRegion + offset).at<Plane>(0, 0);
+        const cv::Mat& localProposals = proposalCosts(sharedRegion + offset);
+        cv::Mat updateMask = cv::Mat::zeros(sharedRegion.size(), CV_8U);
+
+        if(do_gc)
+            runGCExpansion(sharedRegion + offset, localProposals, alpha, updateMask);
+        else
+            updateMask = this->current_cost[VERT](sharedRegion+offset) > proposalCosts(sharedRegion + offset);
+
+        proposalCosts(sharedRegion + offset).copyTo(this->current_cost[VERT](sharedRegion + offset), updateMask);
+        this->current_plane_label[VERT](sharedRegion + offset).setTo(alpha.toScalar(), updateMask);
+    }
+}
+
+void LEDepthEstimator::runHorizontalCostComputation(cv::Mat &proposalCosts, cv::Mat& proposedLabels, cv::Mat& pixelMask)
 {
     int s_hat = light_field->s()/2;
 
-//    #pragma omp parallel for
+    #pragma omp parallel for
     for(uint16_t v = M; v < this->height - 2*M; v++) {
         for(uint16_t u = M; u < this->width - 2*M; u++) {
             cv::Point img_point(u, v);
 
             if(pixelMask.at<uchar>(img_point) == 0) continue;
-
-            if(validMask.at<uchar>(img_point) == 0) {
-                continue;
-                proposalCosts.at<float>(img_point) = INVALID_COST;
-            }
 
             /*
              * For each pixel p = (u, v) compute the set of allowed Radiances;
@@ -562,6 +917,32 @@ void LEDepthEstimator::runHorizontalCostComputation(cv::Mat &proposalCosts, cv::
         }
     }
 
+}
+
+void LEDepthEstimator::runVerticalCostComputation(cv::Mat &proposalCosts, cv::Mat &proposedLabels, cv::Mat &pixelMask)
+{
+    int t_hat = light_field->t()/2;
+
+    #pragma omp parallel for
+    for(uint16_t u = M; u < this->width - 2*M; u++) {
+        for(uint16_t v = M; v < this->height - 2*M; v++) {
+            cv::Point img_point(u, v);
+
+            if(pixelMask.at<uchar>(img_point) == 0) continue;
+
+            /*
+             * For each pixel p = (u, v) compute the set of allowed Radiances;
+             */
+            float d_v = proposedLabels.at<Plane>(v, u).GetZ(img_point);
+            cv::Point2f centre(t_hat, v);
+
+            double curr_cost = this->getCostFromExtendedSet(centre, VERT, d_v,
+                                                            this->v_epi_arr[u],
+                                                            this->v_epi_grad_arr[u]);
+
+            proposalCosts.at<float>(img_point) = curr_cost;
+        }
+    }
 }
 
 void LEDepthEstimator::runGCExpansion(const cv::Rect &sharedRegion, const cv::Mat &localProposals, Plane alpha, cv::Mat &updateMask)
@@ -1026,7 +1407,28 @@ double LEDepthEstimator::getWeightedColorAndGradScore(const cv::Point2f &center,
 
 void LEDepthEstimator::postProcess()
 {
+    cv::Mat disparity[2];
+    cv::Mat depthmap[2];
+    double mse[2];
 
+    for(int epi = HORIZ; epi < END; epi = epi+1) {
+        cv::Rect inner_rect(2, 2, this->height - 4*M, this->width - 4*M);
+        disparity[epi] = this->current_disp[epi](inner_rect).clone();
+        cv::copyMakeBorder(disparity[epi], disparity[epi], 2, 2, 2, 2, cv::BORDER_REPLICATE);
+
+        cv::Mat depth;
+        light_field->convertDisparityToDepth(disparity[epi], depth);
+        cv::Mat depth_error = depth - gt_depth;
+        cv::Mat depth_error_sq = depth_error.mul(depth_error);
+        mse[epi] = cv::sum(depth_error_sq)[0]/(depth.rows * depth.cols);
+
+        depth.convertTo(depthmap[epi], -1, 1.f, -17.f);
+        depthmap[epi] *= 50;
+    }
+
+    cv::imwrite(save_dir + cv::format("/resultHoriz.png"), depthmap[HORIZ]);
+    cv::imwrite(save_dir + cv::format("/resultVert.png"), depthmap[VERT]);
+    std::cout << cv::format("Final MSE : %15.4f%15.4f", mse[HORIZ], mse[VERT]) << std::endl;
 }
 
 void LEDepthEstimator::evaluate(int iter)

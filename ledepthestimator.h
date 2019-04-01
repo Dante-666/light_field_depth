@@ -151,29 +151,35 @@ public:
     void initializeCoordinates();
     void initializeRandomPlane(enum epi_type type);
     void initializeSmoothnessCoeff();
-    void initializeCurrentCosts(enum epi_type);
+    void initializeCurrentCostsFast(enum epi_type type);
+    void initializeCurrentCosts(enum epi_type type);
     void computeDisparityFromPlane(enum epi_type type);
     float getDisparityPerturbationWidth(int iter);
 
     void tests();
     void run();
 
+    bool isValidLabel(Plane label, cv::Point pos);
     cv::Mat isValidLabel(Plane label, cv::Rect rect);
     void prefetchEPIData(bool archived = false);
-    void runHorizontalSpatialPropagation(int iter);
-    void runVerticalSpatialPropagation(int iter);
-    void perturbatePlaneLabels(int iter);
 
     void runHorizontalRegionPropagation(int iter, int grid, bool do_gc = false);
-    void runVerticalRegionPropagation(int iter);
+    void runVerticalRegionPropagation(int iter, int grid, bool do_gc = false);
 
     void runHorizontalIterativeExpansion(int iter, int grid, int set, bool do_gc = false);
+    void runVerticalIterativeExpansion(int iter, int grid, int set, bool do_gc = false);
 
     void runHorizontalExpansionProposer(const Region& region, int set, bool do_gc = false);
     void runHorizontalRansacProposer(const Region& region, int set, bool do_gc = false);
     void runHorizontalRandomProposer(const Region& region, int iter, int set, bool do_gc = false);
 
-    void runHorizontalCostComputation(cv::Mat& proposalCosts, cv::Mat& proposedLabels, cv::Mat& pixelMask, cv::Mat& validMask);
+    void runVerticalExpansionProposer(const Region& region, int set, bool do_gc = false);
+    void runVerticalRansacProposer(const Region& region, int set, bool do_gc = false);
+    void runVerticalRandomProposer(const Region& region, int iter, int set, bool do_gc = false);
+
+    void runHorizontalCostComputation(cv::Mat& proposalCosts, cv::Mat& proposedLabels, cv::Mat& pixelMask);
+    void runVerticalCostComputation(cv::Mat& proposalCosts, cv::Mat& proposedLabels, cv::Mat& pixelMask);
+
     void runGCExpansion(const cv::Rect& sharedRegion, const cv::Mat& localProposals, Plane alpha, cv::Mat& updateMask);
 
     Plane getExpansionPlane(const cv::Rect& unitRegion, epi_type type);
