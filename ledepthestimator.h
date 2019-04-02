@@ -177,8 +177,8 @@ public:
     void runVerticalRansacProposer(const Region& region, int set, bool do_gc = false);
     void runVerticalRandomProposer(const Region& region, int iter, int set, bool do_gc = false);
 
-    void runHorizontalCostComputation(cv::Mat& proposalCosts, cv::Mat& proposedLabels, cv::Mat& pixelMask);
-    void runVerticalCostComputation(cv::Mat& proposalCosts, cv::Mat& proposedLabels, cv::Mat& pixelMask);
+    void runHorizontalCostComputation(cv::Mat& proposalCosts, cv::Mat& proposedLabels, cv::Mat& pixelMask, cv::Mat& validMask);
+    void runVerticalCostComputation(cv::Mat& proposalCosts, cv::Mat& proposedLabels, cv::Mat& pixelMask, cv::Mat& validMask);
 
     void runGCExpansion(const cv::Rect& sharedRegion, const cv::Mat& localProposals, Plane alpha, cv::Mat& updateMask);
 
@@ -207,6 +207,7 @@ public:
                                                const cv::Mat& epi_grad);
 
     void postProcess();
+    void correctMarginLabels();
 
 //    double getMSEdepth();
 //    double getMSEdisparity();

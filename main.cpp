@@ -45,7 +45,7 @@ int main(int argc, char** argv)
     if(argc > 1)
         lf_location = argv[1];
     else
-        lf_location = "/home/siddharth/workspace/lf_datasets/heidelberg/buddha/lf.h5";
+        lf_location = "/home/siddharth/workspace/lf_datasets/heidelberg/medieval/lf.h5";
 
     light_field = new HDF5Container(lf_location);
 
