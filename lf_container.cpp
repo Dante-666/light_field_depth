@@ -1,7 +1,7 @@
 #include "lf_container.h"
 
 LfContainer::LfContainer(LfContainer::Dataset type) {
-    this->type = type;
+    this->_type = type;
     this->_s = 0;
     this->_t = 0;
     this->_u = 0;
@@ -23,6 +23,11 @@ uint16_t LfContainer::t() {
 
 uint16_t LfContainer::s() {
     return this->_s;
+}
+
+LfContainer::Dataset LfContainer::type()
+{
+   return this->_type;
 }
 
 LfContainer::~LfContainer() {}
@@ -304,7 +309,7 @@ void HDF5Container::convertDisparityToDepth(const cv::Mat& disp, cv::Mat &depth)
 
 JPEGContainer::JPEGContainer(QString path) : LfContainer(LfContainer::Dataset::STANFORD) {
 
-    QStringList files = QDir(path).entryList();
+    QStringList files = QDir(path).entryList(QDir::Filter::Files);
 
     for (int i = 0; i < files.size(); i++) {
         QFileInfo f(files[i]);
@@ -313,7 +318,7 @@ JPEGContainer::JPEGContainer(QString path) : LfContainer(LfContainer::Dataset::S
             float c_s, c_t;
             char ext[10];
             int ret = sscanf(files[i].toStdString().c_str(),
-                             "out_%hu_%hu_-%f_%f.%s", &t, &s, &c_t, &c_s, ext);
+                             "out_%hu_%hu_%f_%f.%s", &t, &s, &c_t, &c_s, ext);
 
             if (ret == 5) {
                 if(this->_t < t) this->_t = t;
@@ -325,7 +330,16 @@ JPEGContainer::JPEGContainer(QString path) : LfContainer(LfContainer::Dataset::S
                 std::abort();
             }
         }
+        if(f.suffix() == "yml") {
+            std::string calib_path = path.toStdString() + '/' + files[i].toStdString();
+            cv::FileStorage calib(calib_path, cv::FileStorage::READ);
+            calib["_dH"] >> _dH;
+            calib["_focalLength"] >> _focalLength;
+            calib["_shift"] >> _shift;
+
+        }
     }
+
 
     this->_t++;
     this->_s++;
@@ -376,16 +390,13 @@ void JPEGContainer::getEPIUS(uint16_t u, uint16_t s, cv::Mat &epi) {
 }
 
 void JPEGContainer::getGTDepth(uint16_t s, uint16_t t, cv::Mat &depth) {
-    depth = cv::Mat::zeros(this->v(), this->u(), CV_8U);
-    s = 19;
-    t = 20;
     return;
 }
 
 void JPEGContainer::convertDepthToDisparity(const cv::Mat& depth, cv::Mat &disp) {
-    depth.copyTo(disp);
+    disp = double(this->_dH * this->_focalLength)/depth - double(this->_shift);
 }
 
 void JPEGContainer::convertDisparityToDepth(const cv::Mat& disp, cv::Mat &depth) {
-    disp.copyTo(depth);
+    depth = double(this->_dH * this->_focalLength)/(disp + double(this->_shift));
 }

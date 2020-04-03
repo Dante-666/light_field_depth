@@ -17,7 +17,7 @@ public:
         HEIDELBERG,
         STANFORD
     };
-    LfContainer(LfContainer::Dataset type);
+    LfContainer(LfContainer::Dataset _type);
     virtual ~LfContainer();
     virtual void getImage(uint16_t s, uint16_t t, cv::Mat &img) = 0;
     virtual void getEPIVT(uint16_t v, uint16_t t, cv::Mat &epi) = 0;
@@ -29,9 +29,10 @@ public:
     uint16_t u();
     uint16_t t();
     uint16_t s();
+    LfContainer::Dataset type();
 
 private:
-    LfContainer::Dataset type;
+    LfContainer::Dataset _type;
 
 protected:
     uint16_t _v;
@@ -73,6 +74,9 @@ public:
     virtual void getGTDepth(uint16_t s, uint16_t t, cv::Mat &depth);
     virtual void convertDepthToDisparity(const cv::Mat& depth, cv::Mat &disp);
     virtual void convertDisparityToDepth(const cv::Mat& disp, cv::Mat &depth);
+
+private:
+    float _dH, _focalLength, _shift;
 
 };
 

@@ -156,12 +156,13 @@ public:
     void computeDisparityFromPlane(enum epi_type type);
     float getDisparityPerturbationWidth(int iter);
 
+    void test2();
     void tests();
     void run();
 
     bool isValidLabel(Plane label, cv::Point pos);
     cv::Mat isValidLabel(Plane label, cv::Rect rect);
-    void prefetchEPIData(bool archived = false);
+    void prefetchEPIData(bool archive = true);
 
     void runHorizontalRegionPropagation(int iter, int grid, bool do_gc = false);
     void runVerticalRegionPropagation(int iter, int grid, bool do_gc = false);
@@ -252,12 +253,14 @@ private:
     float alpha = 0.8;
     int W = 2;
     int M = 1;
-    double thresh_color = 200.f * (1 - alpha);
-    double thresh_gradient = 57.f * alpha;
+    double thresh_color = 60.f * (1 - alpha);
+    double thresh_gradient = 64.f * alpha;
     double thresh_smooth = 1.0f;
 
     std::string save_dir;
     int INVALID_COST = 1000000;
+
+    LfContainer::Dataset type;
 
 };
 

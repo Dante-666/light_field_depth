@@ -65,7 +65,8 @@ LEDepthEstimator::LEDepthEstimator(LfContainer *light_field, float min_disp, flo
     //One time effort for both EPIs
     this->initializeSmoothnessCoeff();
 
-    this->prefetchEPIData();
+    this->prefetchEPIData(true);
+//    this->prefetchEPIData(false);
 
     //This generates random planes and associates them with each pixel
 //    this->initializeRandomPlane(HORIZ);
@@ -79,8 +80,10 @@ LEDepthEstimator::LEDepthEstimator(LfContainer *light_field, float min_disp, flo
     this->initializeCurrentCostsFast(VERT);
 
     //Set the ground truths for central image from the light field data
-    this->light_field->getGTDepth(this->light_field->s()/2, this->light_field->t()/2, this->gt_depth);
-    this->light_field->convertDepthToDisparity(this->gt_depth, this->gt_disp);
+    if(this->light_field->type() == LfContainer::Dataset::HEIDELBERG) {
+        this->light_field->getGTDepth(this->light_field->s()/2, this->light_field->t()/2, this->gt_depth);
+        this->light_field->convertDepthToDisparity(this->gt_depth, this->gt_disp);
+    }
 }
 
 LEDepthEstimator::~LEDepthEstimator()
@@ -185,6 +188,8 @@ void LEDepthEstimator::initializeCurrentCostsFast(epi_type type)
                 this->current_cost[HORIZ].at<float>(v, u) = curr_cost;
             }
         }
+
+        cv::imwrite("currCost.png", this->current_cost[HORIZ]);
 
     } else if(type == VERT) {
         Region& region = regions[0];
@@ -296,8 +301,114 @@ float LEDepthEstimator::getDisparityPerturbationWidth(int iter)
     return (this->max_disp - this->min_disp) * pow(0.5f, iter + 1);
 }
 
+void LEDepthEstimator::test2()
+{
+    cv::FileStorage file("matrix/h_mat.yml", cv::FileStorage::READ);
+    file["current_cost_h"] >> this->current_cost[HORIZ];
+    file["current_plane_h"] >> this->current_plane_label[HORIZ];
+    file["current_disp_h"] >> this->current_disp[HORIZ];
+
+    cv::FileStorage file2("matrix/v_mat.yml", cv::FileStorage::READ);
+
+    file2["current_cost_v"] >> this->current_cost[VERT];
+    file2["current_plane_v"] >> this->current_plane_label[VERT];
+    file2["current_disp_v"] >> this->current_disp[VERT];
+
+    cv::Mat depth[2];
+
+    for(int epi = HORIZ; epi < END; epi = epi+1) {
+        light_field->convertDisparityToDepth(this->current_disp[epi], depth[epi]);
+    }
+
+    cv::Mat combo_depth = cv::Mat::zeros(this->height, this->width, CV_32F);
+    cv::Mat inpaint_mask = cv::Mat(this->height, this->width, CV_8U, 255);
+    float thresh = 0.1f;
+
+    for(int v = 0; v < this->height; v++) {
+        for(int u = 0; u < this->width; u++) {
+            float h_d = depth[HORIZ].at<float>(v, u);
+            float v_d = depth[VERT].at<float>(v, u);
+
+            if(std::abs(h_d - v_d) < thresh) {
+                combo_depth.at<float>(v, u) = std::min(h_d, v_d);
+                inpaint_mask.at<uchar>(v, u) = 0;
+            }
+//            else {
+//                if(h_d < v_d) {
+//                    if(current_cost[VERT].at<float>(v, u) < current_cost[HORIZ].at<float>(v, u)) {
+//                        combo_depth.at<float>(v, u) = v_d;
+//                        inpaint_mask.at<uchar>(v, u) = 0;
+//                    }
+//                } else {
+//                    if(current_cost[VERT].at<float>(v, u) > current_cost[HORIZ].at<float>(v, u)) {
+//                        combo_depth.at<float>(v, u) = h_d;
+//                        inpaint_mask.at<uchar>(v, u) = 0;
+//                    }
+//                }
+//            }
+        }
+    }
+
+    cv::Mat inpaint_depth;
+    combo_depth.convertTo(inpaint_depth, -1, 1.f, -17.f);
+    inpaint_depth *= 50;
+
+    cv::Mat inpaint_depth_8u;
+    inpaint_depth.convertTo(inpaint_depth_8u, CV_8U);
+
+    cv::Mat output;
+    cv::inpaint(inpaint_depth_8u, inpaint_mask, output, 3.0, cv::INPAINT_TELEA);
+//    cv::imwrite("out.png", output);
+
+    cv::Mat output_f;
+    output.convertTo(output_f, CV_32F, 1/50.);
+    output_f += 17.f;
+
+
+    cv::Mat depth_error = output_f - gt_depth;
+    cv::Mat depth_error_sq = depth_error.mul(depth_error);
+    double mse = cv::sum(depth_error_sq)[0]/(combo_depth.rows * combo_depth.cols);
+
+//    cv::Mat depthmap;
+//    combo_depth.convertTo(depthmap, -1, 1.f, -17.f);
+//    depthmap *= 50;
+
+    cv::imwrite(save_dir + cv::format("/result.png"), output);
+    std::cout << cv::format("Final MSE : %15.4f", mse) << std::endl;
+}
+
 void LEDepthEstimator::tests()
 {
+    /*cv::FileStorage file("matrix/h_mat.yml", cv::FileStorage::WRITE);
+    this->computeDisparityFromPlane(HORIZ);
+    file <<"current_cost_h" << this->current_cost[HORIZ];
+    file <<"current_plane_h" << this->current_plane_label[HORIZ];
+    file <<"current_disp_h" << this->current_disp[HORIZ];
+
+    cv::FileStorage file2("matrix/v_mat.yml", cv::FileStorage::WRITE);
+
+    this->computeDisparityFromPlane(VERT);
+    file2 <<"current_cost_v" << this->current_cost[VERT];
+    file2 <<"current_plane_v" << this->current_plane_label[VERT];
+    file2 <<"current_disp_v" << this->current_disp[VERT];*/
+
+    /*cv::Point2f center(385, 489);
+
+    for(float disp = this->min_disp; disp <= this->max_disp+0.2; disp+= 0.2) {
+        std::vector<cv::Point2f> pixel_set;
+        getPixelSet(center, pixel_set, HORIZ, disp);
+        std::cout<<disp<<", "<<getWeightedColorAndGradScore(center, pixel_set, HORIZ, this->h_epi_arr[489], this->h_epi_grad_arr[489])<<std::endl;
+//        std::cout<<disp<<", "<<20*disp*disp<<std::endl;
+    }*/
+
+    cv::Point2f center(385, 489);
+    std::vector<cv::Point2f> pixel_set;
+    getPixelSet(center, pixel_set, HORIZ, 0.35);
+
+    for(int i = 0; i < 9; i++) {
+        std::cout<<pixel_set[i]<<std::endl;
+    }
+
 
 }
 
@@ -311,27 +422,36 @@ void LEDepthEstimator::run()
 
     int pmInit = 1;
 
+//    evaluate(0);
+
     for(int iteration = 0; iteration < pmInit; iteration++) {
         std::cout<<"Algorithm ongoing, iteration : "<<iteration<<std::endl;
         std::chrono::time_point t_i = std::chrono::high_resolution_clock::now();
+        std::cout<<"[";
         for(int grid = 0; grid < regions.size(); grid++) {
             runHorizontalRegionPropagation(iteration, grid);
             runVerticalRegionPropagation(iteration, grid);
+            std::cout<<"====="<<grid*33 + 33<<"%";
         }
+        std::cout<<"]"<<std::endl;
         std::chrono::time_point t_j = std::chrono::high_resolution_clock::now();
         std::cout<<"Time taken : "<<std::chrono::duration_cast<std::chrono::seconds>(t_j  - t_i).count()<<" seconds"<<std::endl;
         evaluate(iteration);
     }
+
     correctMarginLabels();
 
     int maxIter = 1;
     for(int iteration = 0; iteration < maxIter; iteration++) {
         std::cout<<"Algorithm ongoing, iteration : "<<iteration+pmInit<<std::endl;
         std::chrono::time_point t_i = std::chrono::high_resolution_clock::now();
+        std::cout<<"[";
         for(int grid = 0; grid < regions.size(); grid++) {
             runHorizontalRegionPropagation(iteration, grid);
             runVerticalRegionPropagation(iteration, grid);
+            std::cout<<"====="<<grid*33 + 33<<"%";
         }
+        std::cout<<"]"<<std::endl;
         std::chrono::time_point t_j = std::chrono::high_resolution_clock::now();
         std::cout<<"Time taken : "<<std::chrono::duration_cast<std::chrono::seconds>(t_j  - t_i).count()<<" seconds"<<std::endl;
         evaluate(iteration + pmInit);
@@ -339,8 +459,11 @@ void LEDepthEstimator::run()
     std::chrono::time_point t_n = std::chrono::high_resolution_clock::now();
     std::cout<<"Total running time : "<<std::chrono::duration_cast<std::chrono::seconds>(t_n - t_0).count()<<" seconds"<<std::endl;
 
-    std::cout<<"Post processing :"<<std::endl;
-    postProcess();
+//    std::cout<<"Tests"<<std::endl;
+//    tests();
+
+//    std::cout<<"Post processing :"<<std::endl;
+//    postProcess();
 
 }
 
@@ -1487,22 +1610,32 @@ void LEDepthEstimator::evaluate(int iter)
         this->computeDisparityFromPlane(epi_type(epi));
         cv::Mat depth;
         light_field->convertDisparityToDepth(current_disp[epi], depth);
-        cv::Mat depth_error = depth - gt_depth;
-        cv::Mat depth_error_sq = depth_error.mul(depth_error);
-        mse[epi] = cv::sum(depth_error_sq)[0]/(depth.rows * depth.cols);
+//        double min, max;
+//        cv::minMaxIdx(this->current_disp[epi], &min, &max);
+//        std::cout<<min<<","<<max<<std::endl;
+//        depth.convertTo(depthmap[epi], -1, 1.f, -17.f);
+        depth.convertTo(depthmap[epi], -1);
+        depthmap[epi] *= 2;
 
-        depth.convertTo(depthmap[epi], -1, 1.f, -17.f);
-        depthmap[epi] *= 50;
-        errormap[epi] = depth_error_sq;
+        if(this->light_field->type() == LfContainer::Dataset::HEIDELBERG) {
+            cv::Mat depth_error = depth - gt_depth;
+            cv::Mat depth_error_sq = depth_error.mul(depth_error);
+            mse[epi] = cv::sum(depth_error_sq)[0]/(depth.rows * depth.cols);
+            errormap[epi] = depth_error_sq;
+        }
     }
 
 
     cv::imwrite(save_dir + cv::format("/result%dD%02d.png", HORIZ, iter), depthmap[HORIZ]);
     cv::imwrite(save_dir + cv::format("/result%dD%02d.png", VERT, iter), depthmap[VERT]);
-    cv::imwrite(save_dir + cv::format("/result%dE%02d.png", HORIZ, iter), errormap[HORIZ] * 255);
-    cv::imwrite(save_dir + cv::format("/result%dE%02d.png", VERT, iter), errormap[VERT] * 255);
+    if(this->light_field->type() == LfContainer::Dataset::HEIDELBERG) {
+        cv::imwrite(save_dir + cv::format("/result%dE%02d.png", HORIZ, iter), errormap[HORIZ] * 255);
+        cv::imwrite(save_dir + cv::format("/result%dE%02d.png", VERT, iter), errormap[VERT] * 255);
+        std::cout << cv::format("%2d%15.4f%15.4f", iter, mse[HORIZ], mse[VERT]) << std::endl;
+    } else {
+        std::cout << cv::format("%2d iteration", iter) << std::endl;
+    }
 
-    std::cout << cv::format("%2d%15.4f%15.4f", iter, mse[HORIZ], mse[VERT]) << std::endl;
 }
 
 void LEDepthEstimator::serializeEPIData()

@@ -24,6 +24,8 @@
  */
 #include <cmath>
 #include <iostream>
+#include <fstream>
+#include <regex>
 #include <QString>
 #include "lf_container.h"
 #include "ledepthestimator.h"
@@ -45,9 +47,11 @@ int main(int argc, char** argv)
     if(argc > 1)
         lf_location = argv[1];
     else
-        lf_location = "/home/siddharth/workspace/lf_datasets/heidelberg/medieval/lf.h5";
+        lf_location = "/home/dante/workspace/lf_datasets/heidelberg/buddha/lf.h5";
+//        lf_location = "/home/siddharth/zipGrave/Kinect2/iter_1";
 
     light_field = new HDF5Container(lf_location);
+//    light_field = new JPEGContainer(lf_location);
 
     std::string save_dir;
     if(argc > 1)
@@ -64,36 +68,40 @@ int main(int argc, char** argv)
         cv::setRNGSeed(uint64_t(seed));
     }
 
-//    cv::Mat image;
-//    light_field->getImage(4, 4, image);
-//    cv::Mat image_g;
-//    cv::cvtColor(image, image_g, cv::COLOR_BGR2GRAY);
-//    cv::imwrite("lf_img.png", image_g);
+    ifstream file;
+    file.open("disp.txt");
+    float min_disp, max_disp;
+
+    if(file.is_open()) {
+        string line;
+
+        while(getline(file, line)) {
+            regex matcher("^" + std::string(argv[2]) +" .*");
+            if(regex_match(line, matcher)) {
+                regex max("\\d+\.\\d+$");
+                smatch m;
+                regex_search(line, m, max);
+                max_disp = stof(m.str(0));
+                regex min("-\\d+\.\\d+");
+                regex_search(line, m, min);
+                min_disp = stof(m.str(0));
+            }
+        }
+    
+        file.close();
+    } else {
+        min_disp = -4.5;
+        max_disp = 1.75;
+    }
+
+    std::cout<<min_disp<<", "<<max_disp<<std::endl;
+
 
     LEDepthEstimator *depth_estimator;
-    depth_estimator = new LEDepthEstimator(light_field, -1.9, 1.9, save_dir);
-//    depth_estimator->tests();
+    depth_estimator = new LEDepthEstimator(light_field, min_disp, max_disp, save_dir);
     depth_estimator->run();
+//    depth_estimator->tests();
 
-    //Utility functions
-//    cv::Mat cv_disp_img;
-//    depth_estimator->computeDisparityFromPlane(cv_disp_img);
-//    cv::Mat cv_depth_img;
-//    light_field->convertDisparityToDepth(cv_disp_img, cv_depth_img);
-
-
-
-    //write_epi_with_grad(horiz_epi, horiz_epi_xgrad, horiz_epi_ygrad);
-
-    //render(gt_depth.row(row), cv_depth_img.row(row));
-
-//    cv::Mat cv_depth_img;
-//    light_field->convertDisparityToDepth(cv_disp_img, cv_depth_img);
-//    depth_estimator->setCurrentDepth(cv_depth_img);
-//    depth_estimator->setCurrentDisparity(cv_disp_img);
-
-//    std::cout<<depth_estimator->getMSEdepth()<<std::endl;
-//    std::cout<<depth_estimator->getMSEdisparity()<<std::endl;
 
     delete light_field;
     delete depth_estimator;
